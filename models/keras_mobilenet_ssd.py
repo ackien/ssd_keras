@@ -18,7 +18,6 @@ limitations under the License.
 
 from __future__ import division
 import numpy as np
-from keras.applications import mobilenet
 from keras.models import Model
 from keras.layers import Input, Lambda, Activation, BatchNormalization, Conv2D, Reshape, Concatenate, DepthwiseConv2D
 from keras.regularizers import l2
@@ -29,11 +28,18 @@ from keras_layers.keras_layer_L2Normalization import L2Normalization
 from keras_layers.keras_layer_DecodeDetections import DecodeDetections
 from keras_layers.keras_layer_DecodeDetectionsFast import DecodeDetectionsFast
 
+# You need to import keras before importing keras_applications
+import keras
+# It's probably better to use keras.applications somehow, but the mobilenet
+# modules in there don't include relu6
+from keras_applications import mobilenet, mobilenet_v2
+
 def mobilenet_ssd(image_size,
                   n_classes,
                   mode='training',
                   width_multiplier=1.0,
                   weights='imagenet',
+                  mobilenet_version='v2',
                   l2_regularization=0.0005,
                   min_scale=None,
                   max_scale=None,
@@ -178,8 +184,6 @@ def mobilenet_ssd(image_size,
     n_classes += 1 # Account for the background class.
     l2_reg = l2_regularization # Make the internal name shorter.
 
-    if tuple(image_size) != (224, 224, 3):
-        raise ValueError("(224, 224, 3) is the only supported `image_size`.")
     img_height, img_width, img_channels = image_size[0], image_size[1], image_size[2]
     img_shape = (img_height, img_width, img_channels)
 
@@ -278,9 +282,12 @@ def mobilenet_ssd(image_size,
     if swap_channels:
         x1 = Lambda(input_channel_swap, output_shape=img_shape, name='input_channel_swap')(x1)
 
-    mobilenet_model = mobilenet.MobileNet(input_shape=img_shape, alpha=width_multiplier, weights=weights, include_top=False)
+    if mobilenet_version == 'v1':
+        mobilenet_model = mobilenet.MobileNet(input_shape=img_shape, alpha=width_multiplier, weights=weights, include_top=False)
+    elif mobilenet_version == 'v2':
+        mobilenet_model = mobilenet_v2.MobileNetV2(input_shape=img_shape, alpha=width_multiplier, weights=weights, include_top=False)
 
-    def make_mobilenet_layer(dw_kernel_size, dw_strides, dw_padding, pw_filters, input_tensor, layer_name):
+    def make_mobilenet_v1_layer(dw_kernel_size, dw_strides, dw_padding, pw_filters, input_tensor, layer_name):
         x = DepthwiseConv2D(dw_kernel_size, strides=dw_strides, activation=None, use_bias=False, padding=dw_padding, name='conv_dw_'+layer_name)(input_tensor)
         x = BatchNormalization(name='conv_dw_'+layer_name+'_bn')(x)
         x = Activation(mobilenet.relu6, name='conv_dw_'+layer_name+'_relu')(x)
@@ -289,30 +296,46 @@ def mobilenet_ssd(image_size,
         x = Activation(mobilenet.relu6, name='conv_pw_'+layer_name+'_relu')(x)
         return x
 
-    conv_11 = mobilenet_model.get_layer('conv_pw_11_relu').output
-    conv_13 = mobilenet_model.get_layer('conv_pw_13_relu').output
-    conv_14 = make_mobilenet_layer(3, (1,1), 'valid', int(width_multiplier*512), conv_13, '14')
-    conv_15 = make_mobilenet_layer(3, (2,2), 'same', int(width_multiplier*256), conv_14, '15')
-    conv_16 = make_mobilenet_layer(3, (2,2), 'same', int(width_multiplier*256), conv_15, '16')
-    conv_17 = make_mobilenet_layer(2, (1,1), 'valid', int(width_multiplier*128), conv_16, '17')
+    def make_mobilenet_v2_layer(dw_kernel_size, dw_strides, dw_padding, pw_filters, input_tensor, layer_name):
+        x = DepthwiseConv2D(dw_kernel_size, strides=dw_strides, activation=None, use_bias=False, padding=dw_padding, name='block_'+layer_name+'_expand')(input_tensor)
+        x = BatchNormalization(name='block_'+layer_name+'_expand_BN')(x)
+        x = Activation(mobilenet.relu6, name='block_'+layer_name+'_expand_relu')(x)
+        x = Conv2D(pw_filters, kernel_size=1, padding='same', use_bias=False, activation=None, name='block_'+layer_name+'_depthwise')(x)
+        x = BatchNormalization(name='block_'+layer_name+'_depthwise_BN')(x)
+        x = Activation(mobilenet.relu6, name='block_'+layer_name+'_depthwise_relu')(x)
+        return x
+
+    if mobilenet_version == 'v1':
+        layer_11 = mobilenet_model.get_layer('conv_pw_11_relu').output
+        layer_13 = mobilenet_model.get_layer('conv_pw_13_relu').output
+        make_mobilenet_layer = make_mobilenet_v1_layer
+    elif mobilenet_version == 'v2':
+        layer_11 = mobilenet_model.get_layer('block_11_add').output
+        layer_13 = mobilenet_model.get_layer('block_13_project_BN').output
+        make_mobilenet_layer = make_mobilenet_v2_layer
+
+    layer_14 = make_mobilenet_layer(3, (1,1), 'valid', int(width_multiplier*512), layer_13, '14')
+    layer_15 = make_mobilenet_layer(3, (2,2), 'same', int(width_multiplier*256), layer_14, '15')
+    layer_16 = make_mobilenet_layer(3, (2,2), 'same', int(width_multiplier*256), layer_15, '16')
+    layer_17 = make_mobilenet_layer(2, (1,1), 'valid', int(width_multiplier*128), layer_16, '17')
 
     ### Build the convolutional predictor layers on top of the base network
 
     # Output shape of `classes`: `(batch, height, width, n_boxes * n_classes)`
-    classes_11 = Conv2D(n_boxes[0]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_11')(conv_11)
-    classes_13 = Conv2D(n_boxes[1]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_13')(conv_13)
-    classes_14 = Conv2D(n_boxes[2]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_14')(conv_14)
-    classes_15 = Conv2D(n_boxes[3]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_15')(conv_15)
-    classes_16 = Conv2D(n_boxes[4]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_16')(conv_16)
-    classes_17 = Conv2D(n_boxes[5]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_17')(conv_17)
+    classes_11 = Conv2D(n_boxes[0]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_11')(layer_11)
+    classes_13 = Conv2D(n_boxes[1]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_13')(layer_13)
+    classes_14 = Conv2D(n_boxes[2]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_14')(layer_14)
+    classes_15 = Conv2D(n_boxes[3]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_15')(layer_15)
+    classes_16 = Conv2D(n_boxes[4]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_16')(layer_16)
+    classes_17 = Conv2D(n_boxes[5]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_17')(layer_17)
 
     # Output shape of `boxes`: `(batch, height, width, n_boxes * 4)`
-    boxes_11 = Conv2D(n_boxes[0]*4, (3,3), strides=(1,1), padding="same", name='boxes_11')(conv_11)
-    boxes_13 = Conv2D(n_boxes[1]*4, (3,3), strides=(1,1), padding="same", name='boxes_13')(conv_13)
-    boxes_14 = Conv2D(n_boxes[2]*4, (3,3), strides=(1,1), padding="same", name='boxes_14')(conv_14)
-    boxes_15 = Conv2D(n_boxes[3]*4, (3,3), strides=(1,1), padding="same", name='boxes_15')(conv_15)
-    boxes_16 = Conv2D(n_boxes[4]*4, (3,3), strides=(1,1), padding="same", name='boxes_16')(conv_16)
-    boxes_17 = Conv2D(n_boxes[5]*4, (3,3), strides=(1,1), padding="same", name='boxes_17')(conv_17)
+    boxes_11 = Conv2D(n_boxes[0]*4, (3,3), strides=(1,1), padding="same", name='boxes_11')(layer_11)
+    boxes_13 = Conv2D(n_boxes[1]*4, (3,3), strides=(1,1), padding="same", name='boxes_13')(layer_13)
+    boxes_14 = Conv2D(n_boxes[2]*4, (3,3), strides=(1,1), padding="same", name='boxes_14')(layer_14)
+    boxes_15 = Conv2D(n_boxes[3]*4, (3,3), strides=(1,1), padding="same", name='boxes_15')(layer_15)
+    boxes_16 = Conv2D(n_boxes[4]*4, (3,3), strides=(1,1), padding="same", name='boxes_16')(layer_16)
+    boxes_17 = Conv2D(n_boxes[5]*4, (3,3), strides=(1,1), padding="same", name='boxes_17')(layer_17)
 
     ## Generate the anchor boxes
     # Output shape of `anchors`: `(batch, height, width, n_boxes, 8)`
