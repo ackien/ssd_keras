@@ -305,6 +305,16 @@ def mobilenet_ssd(image_size,
         x = Activation(mobilenet.relu6, name='block_'+layer_name+'_depthwise_relu')(x)
         return x
 
+    def make_mobilenet_v2_ssdlite_layer(dw_kernel_size, dw_strides, dw_padding, pw_filters, input_tensor, layer_name):
+        x = DepthwiseConv2D(dw_kernel_size, strides=dw_strides, activation=None, use_bias=False, padding=dw_padding, name=layer_name+'_expand')(input_tensor)
+        x = BatchNormalization(name=layer_name+'_expand_BN')(x)
+        x = Activation(mobilenet.relu6, name=layer_name+'_expand_relu')(x)
+        x = Conv2D(pw_filters, kernel_size=1, padding='same', use_bias=False, activation=None, name=layer_name+'_depthwise')(x)
+        x = BatchNormalization(name=layer_name+'_depthwise_BN')(x)
+        x = Lambda(identity_layer, name=layer_name)(x)
+        # x = Activation(mobilenet.relu6, name='block_'+layer_name+'_depthwise_relu')(x)
+        return x
+
     if mobilenet_version == 'v1':
         layer_11 = mobilenet_model.get_layer('conv_pw_11_relu').output
         layer_13 = mobilenet_model.get_layer('conv_pw_13_relu').output
@@ -322,20 +332,36 @@ def mobilenet_ssd(image_size,
     ### Build the convolutional predictor layers on top of the base network
 
     # Output shape of `classes`: `(batch, height, width, n_boxes * n_classes)`
-    classes_11 = Conv2D(n_boxes[0]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_11')(layer_11)
-    classes_13 = Conv2D(n_boxes[1]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_13')(layer_13)
-    classes_14 = Conv2D(n_boxes[2]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_14')(layer_14)
-    classes_15 = Conv2D(n_boxes[3]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_15')(layer_15)
-    classes_16 = Conv2D(n_boxes[4]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_16')(layer_16)
-    classes_17 = Conv2D(n_boxes[5]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_17')(layer_17)
+    if mobilenet_version == 'v1':
+        classes_11 = Conv2D(n_boxes[0]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_11')(layer_11)
+        classes_13 = Conv2D(n_boxes[1]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_13')(layer_13)
+        classes_14 = Conv2D(n_boxes[2]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_14')(layer_14)
+        classes_15 = Conv2D(n_boxes[3]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_15')(layer_15)
+        classes_16 = Conv2D(n_boxes[4]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_16')(layer_16)
+        classes_17 = Conv2D(n_boxes[5]*n_classes, (3,3), strides=(1,1), padding="same", name='classes_17')(layer_17)
+    elif mobilenet_version == 'v2': # ssdlite
+        classes_11 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[0]*n_classes, layer_11, 'classes_11')
+        classes_13 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[1]*n_classes, layer_13, 'classes_13')
+        classes_14 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[2]*n_classes, layer_14, 'classes_14')
+        classes_15 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[3]*n_classes, layer_15, 'classes_15')
+        classes_16 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[4]*n_classes, layer_16, 'classes_16')
+        classes_17 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[5]*n_classes, layer_17, 'classes_17')
 
     # Output shape of `boxes`: `(batch, height, width, n_boxes * 4)`
-    boxes_11 = Conv2D(n_boxes[0]*4, (3,3), strides=(1,1), padding="same", name='boxes_11')(layer_11)
-    boxes_13 = Conv2D(n_boxes[1]*4, (3,3), strides=(1,1), padding="same", name='boxes_13')(layer_13)
-    boxes_14 = Conv2D(n_boxes[2]*4, (3,3), strides=(1,1), padding="same", name='boxes_14')(layer_14)
-    boxes_15 = Conv2D(n_boxes[3]*4, (3,3), strides=(1,1), padding="same", name='boxes_15')(layer_15)
-    boxes_16 = Conv2D(n_boxes[4]*4, (3,3), strides=(1,1), padding="same", name='boxes_16')(layer_16)
-    boxes_17 = Conv2D(n_boxes[5]*4, (3,3), strides=(1,1), padding="same", name='boxes_17')(layer_17)
+    if mobilenet_version == 'v1':
+        boxes_11 = Conv2D(n_boxes[0]*4, (3,3), strides=(1,1), padding="same", name='boxes_11')(layer_11)
+        boxes_13 = Conv2D(n_boxes[1]*4, (3,3), strides=(1,1), padding="same", name='boxes_13')(layer_13)
+        boxes_14 = Conv2D(n_boxes[2]*4, (3,3), strides=(1,1), padding="same", name='boxes_14')(layer_14)
+        boxes_15 = Conv2D(n_boxes[3]*4, (3,3), strides=(1,1), padding="same", name='boxes_15')(layer_15)
+        boxes_16 = Conv2D(n_boxes[4]*4, (3,3), strides=(1,1), padding="same", name='boxes_16')(layer_16)
+        boxes_17 = Conv2D(n_boxes[5]*4, (3,3), strides=(1,1), padding="same", name='boxes_17')(layer_17)
+    elif mobilenet_version == 'v2': # ssdlite
+        boxes_11 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[0]*4, layer_11, 'boxes_11')
+        boxes_13 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[1]*4, layer_13, 'boxes_13')
+        boxes_14 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[2]*4, layer_14, 'boxes_14')
+        boxes_15 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[3]*4, layer_15, 'boxes_15')
+        boxes_16 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[4]*4, layer_16, 'boxes_16')
+        boxes_17 = make_mobilenet_v2_ssdlite_layer(3, (1,1), 'same', n_boxes[5]*4, layer_17, 'boxes_17')
 
     ## Generate the anchor boxes
     # Output shape of `anchors`: `(batch, height, width, n_boxes, 8)`
