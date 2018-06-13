@@ -309,9 +309,9 @@ def mobilenet_ssd(image_size,
         x = DepthwiseConv2D(dw_kernel_size, strides=dw_strides, activation=None, use_bias=False, padding=dw_padding, name=layer_name+'_expand')(input_tensor)
         x = BatchNormalization(name=layer_name+'_expand_BN')(x)
         x = Activation(mobilenet.relu6, name=layer_name+'_expand_relu')(x)
-        x = Conv2D(pw_filters, kernel_size=1, padding='same', use_bias=False, activation=None, name=layer_name+'_depthwise')(x)
-        x = BatchNormalization(name=layer_name+'_depthwise_BN')(x)
+        x = Conv2D(pw_filters, kernel_size=1, padding='same', use_bias=True, activation=None, name=layer_name+'_depthwise')(x)
         x = Lambda(identity_layer, name=layer_name)(x)
+        # x = BatchNormalization(name=layer_name+'_depthwise_BN')(x)
         # x = Activation(mobilenet.relu6, name='block_'+layer_name+'_depthwise_relu')(x)
         return x
 
